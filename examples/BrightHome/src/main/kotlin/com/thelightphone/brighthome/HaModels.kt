@@ -244,7 +244,7 @@ internal data class HaDeviceRegistryEntry(
  * entity_id → area_id, resolved the way Home Assistant resolves it: an entity's own
  * area wins, and it falls back to the area of the device it belongs to.
  */
-fun buildEntityAreaIndex(
+internal fun buildEntityAreaIndex(
     entities: List<HaEntityRegistryEntry>,
     devices: List<HaDeviceRegistryEntry>,
 ): Map<String, String> {
