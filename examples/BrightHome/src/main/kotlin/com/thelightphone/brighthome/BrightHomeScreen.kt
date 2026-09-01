@@ -56,11 +56,11 @@ class BrightHomeScreen(sealedActivity: SealedLightActivity) :
             ) {
                 Column(modifier = Modifier.fillMaxSize()) {
                     LightTopBar(
-                        leftButton = if (state.paired && state.tab == HomeTab.Favorites) {
+                        leftButton = if (state.paired) {
                             LightBarButton.LightIcon(
-                                icon = LightIcons.PENCIL,
-                                contentDescription = "Edit favorites",
-                                onClick = { openEditFavorites() },
+                                icon = LightIcons.SEARCH,
+                                contentDescription = "Search",
+                                onClick = { openSearch() },
                             )
                         } else {
                             null
@@ -124,7 +124,8 @@ class BrightHomeScreen(sealedActivity: SealedLightActivity) :
 
                 state.favorites.isEmpty() -> CenteredNotice(
                     message = "No favorites yet. Pin the handful of things you actually " +
-                        "touch and they will be one tap from the launcher.",
+                        "touch and they will be one tap from the launcher. Hold any " +
+                        "light, blind or thermostat for its controls.",
                     actionLabel = "Choose favorites",
                     onAction = { openEditFavorites() },
                 )
@@ -135,8 +136,8 @@ class BrightHomeScreen(sealedActivity: SealedLightActivity) :
                         EntityRowView(
                             row = row,
                             height = rowHeight,
-                            onClick = if (row.kind == ControlKind.ReadOnly) null
-                            else ({ viewModel.act(row.entityId) }),
+                            onClick = rowTap(row),
+                            onLongClick = rowHold(row),
                         )
                     }
                 }
@@ -181,12 +182,35 @@ class BrightHomeScreen(sealedActivity: SealedLightActivity) :
                         EntityRowView(
                             row = row,
                             height = rowHeight,
-                            onClick = { viewModel.act(row.entityId) },
+                            onClick = rowTap(row),
+                            onLongClick = rowHold(row),
                         )
                     }
                 }
             }
         }
+    }
+
+    /**
+     * A tap does the obvious thing: flips a switch, fires a scene, opens the controls for
+     * the two domains where "flip" means nothing. Holding always opens the controls, so
+     * a light keeps its one-tap toggle and still has a brightness dial behind it.
+     */
+    private fun rowTap(row: EntityRow): (() -> Unit)? = when (row.kind) {
+        ControlKind.ReadOnly -> null
+        ControlKind.Detail -> ({ openControl(row.entityId) })
+        else -> ({ viewModel.act(row.entityId) })
+    }
+
+    private fun rowHold(row: EntityRow): (() -> Unit)? =
+        if (row.hasDetail) ({ openControl(row.entityId) }) else null
+
+    private fun openControl(entityId: String) {
+        navigateTo({ activity -> EntityControlScreen(activity, viewModel, entityId) })
+    }
+
+    private fun openSearch() {
+        navigateTo({ activity -> SearchScreen(activity, viewModel) })
     }
 
     private fun openPairing() {

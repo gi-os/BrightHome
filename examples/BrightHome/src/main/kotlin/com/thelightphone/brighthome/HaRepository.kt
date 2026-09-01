@@ -21,6 +21,9 @@ import kotlinx.serialization.json.Json
 /** How long a guess stands before BrightHome goes and asks what actually happened. */
 private const val CONFIRM_TIMEOUT_MILLIS = 6_000L
 
+/** How long the wheel has to be still before the value is sent. */
+private const val ADJUST_DEBOUNCE_MILLIS = 550L
+
 object BrightHomePreferences {
     val CONFIG = stringPreferencesKey("ha_config")
     val FAVORITES = stringPreferencesKey("favorites")
@@ -59,6 +62,14 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
     private val _optimistic = MutableStateFlow<Map<String, String>>(emptyMap())
     val optimistic: StateFlow<Map<String, String>> = _optimistic.asStateFlow()
 
+    /**
+     * Numeric overlays for things being dialled right now — brightness, setpoint, blind
+     * position. Separate from [_optimistic], which carries state *words*: spinning a
+     * wheel changes a number on an attribute, not the entity's state.
+     */
+    private val _pending = MutableStateFlow<Map<String, Double>>(emptyMap())
+    val pending: StateFlow<Map<String, Double>> = _pending.asStateFlow()
+
     private val _areas = MutableStateFlow<List<HaArea>>(emptyList())
     val areas: StateFlow<List<HaArea>> = _areas.asStateFlow()
 
@@ -90,6 +101,9 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
 
     /** One pending optimistic-clear timer per entity, so a second tap cancels the first. */
     private val clearJobs = mutableMapOf<String, Job>()
+
+    /** One in-flight debounce per entity, so a spin sends one call and not thirty. */
+    private val adjustJobs = mutableMapOf<String, Job>()
 
     private var loaded = false
 
@@ -239,7 +253,10 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
         connectionJob = null
         clearJobs.values.forEach { it.cancel() }
         clearJobs.clear()
+        adjustJobs.values.forEach { it.cancel() }
+        adjustJobs.clear()
         _optimistic.value = emptyMap()
+        _pending.value = emptyMap()
         client?.close()
         client = null
         if (_status.value !is ConnectionStatus.Unpaired) {
@@ -262,8 +279,13 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
 
             is HaEvent.StateChanged -> {
                 _entities.update { current -> current + (event.state.entityId to event.state) }
-                // The truth arrived; the guess is no longer needed.
+                // The truth arrived; the guess is no longer needed. The numeric overlay
+                // only clears if nothing is still being dialled, or the value would jump
+                // back under the finger mid-spin.
                 _optimistic.update { current -> current - event.state.entityId }
+                if (adjustJobs[event.state.entityId]?.isActive != true) {
+                    _pending.update { current -> current - event.state.entityId }
+                }
             }
 
             is HaEvent.Areas -> {
@@ -346,6 +368,61 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
         }
     }
 
+    /**
+     * Dials a value — brightness, setpoint, blind position.
+     *
+     * The number moves on screen immediately and the call is sent once the wheel stops.
+     * Sending on every notch would put thirty requests down a tunnel that takes 100ms
+     * each, and the thermostat would spend a minute catching up with your thumb.
+     */
+    fun adjust(scope: CoroutineScope, adjustment: Adjustment, value: Double) {
+        val entityId = adjustment.entityId
+        _pending.update { current -> current + (entityId to value) }
+
+        val haClient = client
+        if (haClient == null) {
+            _message.value = "Not connected."
+            return
+        }
+
+        adjustJobs.remove(entityId)?.cancel()
+        adjustJobs[entityId] = scope.launch(Dispatchers.IO) {
+            delay(ADJUST_DEBOUNCE_MILLIS)
+            val call = setValueCall(adjustment.copy(value = value))
+            haClient.callService(call).fold(
+                onSuccess = {
+                    // Hold the overlay a moment longer: the state_changed confirming a
+                    // brightness change lands well after the call returns.
+                    delay(CONFIRM_TIMEOUT_MILLIS)
+                    _pending.update { current ->
+                        if (current[entityId] == value) current - entityId else current
+                    }
+                },
+                onFailure = { error ->
+                    _pending.update { current ->
+                        if (current[entityId] == value) current - entityId else current
+                    }
+                    _message.value = error.message ?: "That did not go through."
+                },
+            )
+            adjustJobs.remove(entityId)
+        }
+    }
+
+    /** Fires a service call that carries no optimistic guess — a blind, a mode change. */
+    fun send(scope: CoroutineScope, call: ServiceCall, failureNote: String? = null) {
+        val haClient = client
+        if (haClient == null) {
+            _message.value = "Not connected."
+            return
+        }
+        scope.launch(Dispatchers.IO) {
+            haClient.callService(call).onFailure { error ->
+                _message.value = failureNote ?: error.message ?: "That did not go through."
+            }
+        }
+    }
+
     /** Re-pulls the snapshot without tearing the socket down. */
     fun refresh(scope: CoroutineScope) {
         val haClient = client ?: return
@@ -354,6 +431,7 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
                 onSuccess = { snapshot ->
                     _entities.value = snapshot.associateBy { it.entityId }
                     _optimistic.value = emptyMap()
+                    if (adjustJobs.isEmpty()) _pending.value = emptyMap()
                 },
                 onFailure = { error ->
                     _message.value = error.message ?: "Refresh failed."

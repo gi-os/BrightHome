@@ -1,5 +1,7 @@
 package com.thelightphone.brighthome
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +36,28 @@ internal const val TRAILING_GLYPH_UNITS = 2f
 private val ROW_VERTICAL_PADDING = 6.dp
 
 /**
+ * lightClickable with a hold.
+ *
+ * The SDK has no long-press helper because LightOS itself has no long-press. It is worth
+ * adding here for one reason: a tap on a light has to stay instant — that one-tap promise
+ * is the whole point of the Favorites page — so the brightness controls need a different
+ * gesture rather than replacing the tap with a menu.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+internal fun Modifier.lightRowGestures(
+    onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)?,
+): Modifier {
+    if (onClick == null && onLongClick == null) return this
+    return this.combinedClickable(
+        interactionSource = null,
+        indication = null,
+        onLongClick = onLongClick,
+        onClick = { onClick?.invoke() },
+    )
+}
+
+/**
  * The row height LightLazyScrollView needs, in grid units.
  *
  * It has to be measured rather than picked. Grid units scale with screen *width* while
@@ -66,6 +90,7 @@ internal fun EntityRowView(
     row: EntityRow,
     height: Dp,
     onClick: (() -> Unit)?,
+    onLongClick: (() -> Unit)? = null,
     trailing: RowTrailing = RowTrailing.State,
 ) {
     val colors = LightThemeTokens.colors
@@ -78,8 +103,9 @@ internal fun EntityRowView(
         modifier = Modifier
             .fillMaxWidth()
             .height(height)
-            .then(
-                if (clickable) Modifier.lightClickable { onClick?.invoke() } else Modifier,
+            .lightRowGestures(
+                onClick = if (clickable) onClick else null,
+                onLongClick = onLongClick,
             )
             .padding(horizontal = EDGE_INSET_UNITS.gridUnitsAsDp()),
         verticalAlignment = Alignment.CenterVertically,
@@ -113,6 +139,13 @@ internal fun EntityRowView(
                     row.kind == ControlKind.Toggle -> LightIcon(
                         icon = if (row.isOn) LightIcons.TOGGLE_STATE_ON
                         else LightIcons.TOGGLE_STATE_OFF,
+                        size = TRAILING_GLYPH_UNITS,
+                    )
+
+                    // A thermostat or a blind opens rather than flips, so it gets the
+                    // chevron every list in LightOS uses for "there is more here".
+                    row.kind == ControlKind.Detail -> LightIcon(
+                        icon = LightIcons.ARROW_RIGHT,
                         size = TRAILING_GLYPH_UNITS,
                     )
 

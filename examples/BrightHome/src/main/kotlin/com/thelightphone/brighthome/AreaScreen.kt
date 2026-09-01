@@ -44,6 +44,10 @@ class AreaScreen(
 
     override fun willShow() = homeViewModel.resume()
 
+    private fun openControl(entityId: String) {
+        navigateTo({ activity -> EntityControlScreen(activity, homeViewModel, entityId) })
+    }
+
     @Composable
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()
@@ -81,8 +85,16 @@ class AreaScreen(
                                     EntityRowView(
                                         row = row,
                                         height = rowHeight,
-                                        onClick = if (row.kind == ControlKind.ReadOnly) null
-                                        else ({ homeViewModel.act(row.entityId) }),
+                                        onClick = when (row.kind) {
+                                            ControlKind.ReadOnly -> null
+                                            ControlKind.Detail -> ({ openControl(row.entityId) })
+                                            else -> ({ homeViewModel.act(row.entityId) })
+                                        },
+                                        onLongClick = if (row.hasDetail) {
+                                            { openControl(row.entityId) }
+                                        } else {
+                                            null
+                                        },
                                     )
                                 }
                             }

@@ -60,6 +60,13 @@ enum class ControlKind {
     /** scenes, scripts, buttons — tap fires it, there is no "off". */
     Momentary,
 
+    /**
+     * Thermostats and blinds. There is no sensible binary for either — "toggle" a
+     * half-open blind and nobody can say what should happen — so a tap opens the
+     * controls instead of guessing.
+     */
+    Detail,
+
     /** sensors and anything unrecognised — tap does nothing. */
     ReadOnly,
 }
@@ -72,8 +79,11 @@ enum class ControlKind {
 object Domains {
     private val TOGGLEABLE = setOf(
         "light", "switch", "fan", "input_boolean", "automation", "humidifier", "siren",
-        "remote", "media_player", "cover", "lock",
+        "remote", "media_player", "lock",
     )
+
+    /** Domains that open a screen of their own rather than flipping. */
+    private val DETAILED = setOf("climate", "cover")
     private val MOMENTARY = setOf("scene", "script", "button", "input_button")
 
     /** Domains worth offering in the favourites picker. Sensors are shown, never picked. */
@@ -84,12 +94,24 @@ object Domains {
 
     fun controlKind(domain: String): ControlKind = when (domain) {
         in MOMENTARY -> ControlKind.Momentary
+        in DETAILED -> ControlKind.Detail
         in TOGGLEABLE -> ControlKind.Toggle
         else -> ControlKind.ReadOnly
     }
 
     fun isInteresting(domain: String): Boolean =
-        domain in TOGGLEABLE || domain in MOMENTARY || domain in READABLE
+        domain in TOGGLEABLE || domain in MOMENTARY || domain in DETAILED ||
+            domain in READABLE
+
+    /**
+     * Whether holding the row should open a screen with more than a switch on it. A
+     * dimmable light qualifies; a relay pretending to be one does not.
+     */
+    fun hasDetail(state: HaState): Boolean = when (state.domain) {
+        "climate", "cover" -> true
+        "light" -> adjustmentFor(state) != null
+        else -> false
+    }
 
     /**
      * The "on" state is domain-specific. A cover is on when open, a lock when locked —
@@ -115,6 +137,7 @@ object Domains {
                 if (on) "close_cover" else "open_cover",
                 state.entityId,
             )
+            "climate" -> null
             "media_player" -> ServiceCall("media_player", "media_play_pause", state.entityId)
             "scene" -> ServiceCall("scene", "turn_on", state.entityId)
             "script" -> ServiceCall("script", "turn_on", state.entityId)
@@ -147,9 +170,16 @@ object Domains {
     }
 }
 
-data class ServiceCall(val domain: String, val service: String, val entityId: String) {
+data class ServiceCall(
+    val domain: String,
+    val service: String,
+    val entityId: String,
+    /** Anything beyond the target — brightness_pct, temperature, position. */
+    val extra: JsonObject? = null,
+) {
     fun body(): JsonObject = buildJsonObject {
         put("entity_id", JsonPrimitive(entityId))
+        extra?.forEach { (key, value) -> put(key, value) }
     }
 }
 

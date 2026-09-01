@@ -26,6 +26,8 @@ data class EntityRow(
     val kind: ControlKind,
     val isOn: Boolean,
     val unavailable: Boolean,
+    /** Whether holding this row opens a control screen worth opening. */
+    val hasDetail: Boolean = false,
 )
 
 data class AreaRow(
@@ -184,6 +186,7 @@ class BrightHomeViewModel(
         kind = Domains.controlKind(domain),
         isOn = Domains.isOn(this),
         unavailable = isUnavailable,
+        hasDetail = Domains.hasDetail(this),
     )
 
     /** A favourite whose entity is gone still gets a row, so it can be removed. */
@@ -246,6 +249,43 @@ class BrightHomeViewModel(
                 name to members.sortedBy { it.friendlyName.lowercase() }.map { it.toRow() }
             }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /**
+     * One entity, live. The control screen needs the whole state — attributes included —
+     * rather than the flattened row the lists use.
+     */
+    fun entityFlow(entityId: String): StateFlow<HaState?> = combine(
+        repository.entities,
+        repository.optimistic,
+    ) { entities, optimistic ->
+        entities.withOptimistic(optimistic)[entityId]
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Ranked matches for a typed query. See [EntitySearch] for the ordering. */
+    fun search(query: String): List<EntityRow> {
+        val entities = repository.entities.value
+            .withOptimistic(repository.optimistic.value)
+        val index = repository.entityArea.value
+        val areaNames = repository.areas.value.associate { it.areaId to it.name }
+        return EntitySearch
+            .search(
+                query = query,
+                entities = entities.values,
+                areaOf = { id -> index[id]?.let { areaNames[it] } },
+            )
+            .map { hit ->
+                val row = hit.state.toRow()
+                // The room is what disambiguates two lamps called "Lamp", so it goes on
+                // the line that would otherwise repeat the state.
+                if (hit.area != null) row.copy(subtitle = "${hit.area} · ${row.subtitle}")
+                else row
+            }
+    }
+
+    fun adjust(adjustment: Adjustment, value: Double) =
+        repository.adjust(viewModelScope, adjustment, value)
+
+    fun send(call: ServiceCall) = repository.send(viewModelScope, call)
 
     fun selectTab(next: HomeTab) {
         if (tab.value == next) {

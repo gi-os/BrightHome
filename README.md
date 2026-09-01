@@ -15,7 +15,7 @@ install or update it directly. Don't have BrightMarket yet? Get it, and browse
 every Bright app, at
 **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)**.
 
-**Current release: v1.0.2.** `versionCode` 3, tool id `com.thelightphone.brighthome`.
+**Current release: v1.1.0.** `versionCode` 4, tool id `com.thelightphone.brighthome`.
 
 Part of the [Bright* collection](https://brightmarket.gzl.dev).
 
@@ -23,13 +23,16 @@ Part of the [Bright* collection](https://brightmarket.gzl.dev).
 
 - **Favorites is the home page.** The four or five things you actually touch, one tap
   from the launcher. Everything else is two.
+- **Search** anything by name, by room, or by entity id, ranked so the thing you meant
+  is at the top.
+- **Dim lights, set thermostats, position blinds.** Hold a row for its controls, then
+  turn the phone's wheel.
 - **Rooms** groups your entities the way Home Assistant does, resolving each entity's
   area from its own assignment first and its device's second.
 - **Scenes** fires scenes, scripts and buttons.
 - Live state over the Home Assistant WebSocket, so a light someone else switches off
   updates on the phone without a refresh.
-- Toggles, covers, locks and media players; sensors and climate read out but do not
-  take a tap.
+- Toggles, locks and media players flip on a tap; sensors read out and don't take one.
 - Setup is one scanned code. Nothing is typed unless you want it to be.
 
 The tool asks for `INTERNET`, `ACCESS_NETWORK_STATE`, `CAMERA` for the setup scan, and
@@ -127,6 +130,16 @@ and tells BrightMarket about it.
 
 ## Release notes
 
+- **v1.1.0** — Search, and real controls for the three things that have a value rather
+  than a state. A **search** button sits in the top bar on every tab: type once, and
+  matches are ranked so a name beginning with what you typed beats one that merely
+  contains it, with rooms and entity ids searchable too. **Lights** now dim by
+  percentage, **thermostats** set a target with the mode list underneath, and **blinds**
+  get open/stop/close plus a position dial — each of them filtered by what the device
+  actually reports it can do, so no Stop button appears on a blind that cannot stop.
+  Turning the phone's wheel adjusts whichever of the three is on screen. A tap still does
+  the obvious thing and holding opens the controls, so a light keeps its one-tap toggle.
+  Editing favorites moved to Settings to make room for search.
 - **v1.0.2** — **Set up now opens.** Tapping it killed the tool outright, and the pairing
   screen was innocent: opening it asks LightOS for the keyboard options, a current phone
   omits its null fields when it encodes the reply, and to the decoder a nullable field
