@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BrightHome — pairing code</title>
+<style>
+  :root {
+    --bg: #000; --fg: #fff; --dim: #888; --line: #333;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px 20px 64px;
+    background: var(--bg); color: var(--fg);
+    font: 15px/1.55 var(--mono);
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 19px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 6px; }
+  p.lede { color: var(--dim); margin: 0 0 28px; }
+  fieldset { border: 1px solid var(--line); padding: 18px 18px 22px; margin: 0 0 22px; }
+  legend { padding: 0 8px; font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--dim); }
+  label { display: block; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--dim); margin: 14px 0 5px; }
+  label:first-of-type { margin-top: 0; }
+  input {
+    width: 100%; padding: 9px 10px; background: #0d0d0d; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 0; font: 14px var(--mono);
+  }
+  input:focus { outline: none; border-color: var(--fg); }
+  .hint { font-size: 12px; color: var(--dim); margin-top: 5px; }
+  .qr-wrap { display: flex; flex-wrap: wrap; gap: 26px; align-items: flex-start; }
+  .card { background: #fff; padding: 16px; line-height: 0; }
+  canvas { image-rendering: pixelated; display: block; }
+  .meta { font-size: 12px; color: var(--dim); flex: 1 1 240px; min-width: 220px; }
+  .warn { color: var(--fg); border-left: 2px solid var(--fg); padding-left: 10px; margin: 12px 0; }
+  details { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+  summary { cursor: pointer; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; color: var(--dim); background: #0d0d0d; padding: 12px; border: 1px solid var(--line); }
+  ol { padding-left: 20px; color: var(--dim); font-size: 13px; }
+  li { margin: 7px 0; }
+  code { color: var(--fg); }
+  footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+  a { color: var(--fg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>BrightHome pairing code</h1>
+  <p class="lede">
+    Fill this in, then scan the code with BrightHome on the Light Phone III.
+    Everything happens in this tab — the page loads nothing and sends nothing,
+    so your tokens never leave this browser.
+  </p>
+
+  <fieldset>
+    <legend>Home Assistant</legend>
+    <label for="url">Address</label>
+    <input id="url" type="text" placeholder="https://ha.example.com" autocomplete="off" spellcheck="false">
+    <div class="hint">Must be https. The phone refuses plain http, so a LAN address cannot work — this is what the Cloudflare tunnel is for.</div>
+
+    <label for="token">Long-lived access token</label>
+    <input id="token" type="text" placeholder="eyJhbGciOi…" autocomplete="off" spellcheck="false">
+    <div class="hint">Home Assistant → your profile → Security → Long-lived access tokens → Create token. Use an admin account if you want the Rooms tab.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Cloudflare Access — optional</legend>
+    <label for="cfid">CF-Access-Client-Id</label>
+    <input id="cfid" type="text" placeholder="…….access" autocomplete="off" spellcheck="false">
+    <label for="cfsec">CF-Access-Client-Secret</label>
+    <input id="cfsec" type="text" placeholder="" autocomplete="off" spellcheck="false">
+    <div class="hint">Leave both blank if the tunnel has no Access policy in front of it. Fill in both or neither.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Scan this</legend>
+    <div class="qr-wrap">
+      <div class="card"><canvas id="qr" width="320" height="320"></canvas></div>
+      <div class="meta" id="meta"></div>
+    </div>
+    <details>
+      <summary>Show the payload</summary>
+      <pre id="payload"></pre>
+    </details>
+  </fieldset>
+
+  <fieldset>
+    <legend>Setting up the tunnel</legend>
+    <ol>
+      <li>Run the <code>cloudflared</code> add-on and point a tunnel hostname at <code>http://homeassistant:8123</code>.</li>
+      <li>Tell Home Assistant to trust it, or every request is dropped:
+        <pre>http:
+  use_x_forwarded_for: true
+  trusted_proxies:
+    - 172.30.33.0/24</pre>
+      </li>
+      <li>Optional but worth it: put an Access application in front of the hostname so the login page is not on the open internet, then create a <em>service token</em> for BrightHome. Access cannot run an interactive login against an app, which is why the service token exists.</li>
+      <li>Add a policy on that application with the action <em>Service Auth</em> and the service token as its include rule.</li>
+    </ol>
+  </fieldset>
+
+  <footer>
+    Part of <a href="https://brightmarket.gzl.dev">BrightMarket</a>. The Light Phone does not sponsor or endorse this.
+  </footer>
+</main>
+
+<script>
+  /* Minimal byte-mode QR encoder, error-correction level L.
+     Written for BrightHome's pairing page so the page stays self-contained: no CDN,
+     no network, the credentials never leave the browser tab they are typed into. */
+  (function (root) {
+    'use strict';
+  
+    // [ecCodewordsPerBlock, blocksGroup1, dataPerBlock1, blocksGroup2, dataPerBlock2]
+    var EC_L = {
+      1:[7,1,19,0,0],    2:[10,1,34,0,0],   3:[15,1,55,0,0],   4:[20,1,80,0,0],
+      5:[26,1,108,0,0],  6:[18,2,68,0,0],   7:[20,2,78,0,0],   8:[24,2,97,0,0],
+      9:[30,2,116,0,0],  10:[18,2,68,2,69], 11:[20,4,81,0,0],  12:[24,2,92,2,93],
+      13:[26,4,107,0,0], 14:[30,3,115,1,116], 15:[22,5,87,1,88], 16:[24,5,98,1,99],
+      17:[28,1,107,5,108], 18:[30,5,120,1,121], 19:[28,3,113,4,114], 20:[28,3,107,5,108],
+      21:[28,4,116,4,117], 22:[28,2,111,7,112], 23:[30,4,121,5,122], 24:[30,6,117,4,118],
+      25:[26,8,106,4,107], 26:[28,10,114,2,115], 27:[30,8,122,4,123]
+    };
+  
+    var ALIGN = {
+      1:[], 2:[6,18], 3:[6,22], 4:[6,26], 5:[6,30], 6:[6,34],
+      7:[6,22,38], 8:[6,24,42], 9:[6,26,46], 10:[6,28,50], 11:[6,30,54],
+      12:[6,32,58], 13:[6,34,62], 14:[6,26,46,66], 15:[6,26,48,70],
+      16:[6,26,50,74], 17:[6,30,54,78], 18:[6,30,56,82], 19:[6,30,58,86],
+      20:[6,34,62,90], 21:[6,28,50,72,94], 22:[6,26,50,74,98],
+      23:[6,30,54,78,102], 24:[6,28,54,80,106], 25:[6,32,58,84,110],
+      26:[6,30,58,86,114], 27:[6,34,62,90,118]
+    };
+  
+    // GF(256) with the QR primitive polynomial 0x11d.
+    var EXP = new Uint8Array(512), LOG = new Uint8Array(256);
+    (function () {
+      var x = 1;
+      for (var i = 0; i < 255; i++) {
+        EXP[i] = x;
+        LOG[x] = i;
+        x <<= 1;
+        if (x & 0x100) x ^= 0x11d;
+      }
+      for (var j = 255; j < 512; j++) EXP[j] = EXP[j - 255];
+    })();
+  
+    function gfMul(a, b) {
+      if (a === 0 || b === 0) return 0;
+      return EXP[LOG[a] + LOG[b]];
+    }
+  
+    function generatorPoly(degree) {
+      var poly = [1];
+      for (var d = 0; d < degree; d++) {
+        var next = new Array(poly.length + 1).fill(0);
+        for (var i = 0; i < poly.length; i++) {
+          next[i] ^= poly[i];
+          next[i + 1] ^= gfMul(poly[i], EXP[d]);
+        }
+        poly = next;
+      }
+      return poly;
+    }
+  
+    function reedSolomon(data, ecLength) {
+      var gen = generatorPoly(ecLength);
+      var remainder = new Array(ecLength).fill(0);
+      for (var i = 0; i < data.length; i++) {
+        var factor = data[i] ^ remainder[0];
+        remainder.shift();
+        remainder.push(0);
+        for (var j = 0; j < ecLength; j++) {
+          remainder[j] ^= gfMul(gen[j + 1], factor);
+        }
+      }
+      return remainder;
+    }
+  
+    function utf8Bytes(text) {
+      var out = [];
+      for (var i = 0; i < text.length; i++) {
+        var code = text.charCodeAt(i);
+        if (code < 0x80) {
+          out.push(code);
+        } else if (code < 0x800) {
+          out.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        } else if (code < 0xd800 || code >= 0xe000) {
+          out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        } else {
+          i++;
+          var pair = 0x10000 + (((code & 0x3ff) << 10) | (text.charCodeAt(i) & 0x3ff));
+          out.push(
+            0xf0 | (pair >> 18),
+            0x80 | ((pair >> 12) & 0x3f),
+            0x80 | ((pair >> 6) & 0x3f),
+            0x80 | (pair & 0x3f)
+          );
+        }
+      }
+      return out;
+    }
+  
+    function dataCapacity(version) {
+      var spec = EC_L[version];
+      return spec[1] * spec[2] + spec[3] * spec[4];
+    }
+  
+    function pickVersion(byteLength) {
+      for (var v = 1; v <= 27; v++) {
+        var lengthBits = v < 10 ? 8 : 16;
+        var needed = Math.ceil((4 + lengthBits + byteLength * 8) / 8);
+        if (needed <= dataCapacity(v)) return v;
+      }
+      throw new Error('Payload is too long for a single QR code.');
+    }
+  
+    function buildCodewords(bytes, version) {
+      var spec = EC_L[version];
+      var lengthBits = version < 10 ? 8 : 16;
+      var bits = [];
+  
+      function push(value, count) {
+        for (var i = count - 1; i >= 0; i--) bits.push((value >> i) & 1);
+      }
+  
+      push(4, 4);                    // byte mode
+      push(bytes.length, lengthBits);
+      for (var i = 0; i < bytes.length; i++) push(bytes[i], 8);
+  
+      var capacityBits = dataCapacity(version) * 8;
+      var terminator = Math.min(4, capacityBits - bits.length);
+      push(0, terminator);
+      while (bits.length % 8 !== 0) bits.push(0);
+  
+      var codewords = [];
+      for (var b = 0; b < bits.length; b += 8) {
+        var byteValue = 0;
+        for (var k = 0; k < 8; k++) byteValue = (byteValue << 1) | bits[b + k];
+        codewords.push(byteValue);
+      }
+      var pad = [0xec, 0x11], p = 0;
+      while (codewords.length < dataCapacity(version)) codewords.push(pad[p++ % 2]);
+  
+      // Split into blocks, compute ECC per block, then interleave both halves.
+      var blocks = [], eccBlocks = [], offset = 0;
+      var groups = [[spec[1], spec[2]], [spec[3], spec[4]]];
+      for (var g = 0; g < 2; g++) {
+        for (var n = 0; n < groups[g][0]; n++) {
+          var block = codewords.slice(offset, offset + groups[g][1]);
+          offset += groups[g][1];
+          blocks.push(block);
+          eccBlocks.push(reedSolomon(block, spec[0]));
+        }
+      }
+  
+      var result = [], maxData = Math.max(spec[2], spec[4]);
+      for (var c = 0; c < maxData; c++) {
+        for (var bi = 0; bi < blocks.length; bi++) {
+          if (c < blocks[bi].length) result.push(blocks[bi][c]);
+        }
+      }
+      for (var e = 0; e < spec[0]; e++) {
+        for (var ei = 0; ei < eccBlocks.length; ei++) result.push(eccBlocks[ei][e]);
+      }
+      return result;
+    }
+  
+    function bch(value, generator, generatorBits) {
+      var result = value;
+      for (var i = generatorBits - 1; i >= 0; i--) {
+        if (result >>> (i + generatorBits) & 1) {
+          result ^= generator << i;
+        }
+      }
+      return result;
+    }
+  
+    function formatBits(mask) {
+      // Level L is 01 in the format's EC field.
+      var data = (0x01 << 3) | mask;
+      var remainder = data << 10;
+      for (var i = 14; i >= 10; i--) {
+        if ((remainder >>> i) & 1) remainder ^= 0x537 << (i - 10);
+      }
+      return ((data << 10) | remainder) ^ 0x5412;
+    }
+  
+    function versionBits(version) {
+      var remainder = version << 12;
+      for (var i = 17; i >= 12; i--) {
+        if ((remainder >>> i) & 1) remainder ^= 0x1f25 << (i - 12);
+      }
+      return (version << 12) | remainder;
+    }
+  
+    function maskAt(mask, row, col) {
+      switch (mask) {
+        case 0: return (row + col) % 2 === 0;
+        case 1: return row % 2 === 0;
+        case 2: return col % 3 === 0;
+        case 3: return (row + col) % 3 === 0;
+        case 4: return (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0;
+        case 5: return ((row * col) % 2) + ((row * col) % 3) === 0;
+        case 6: return (((row * col) % 2) + ((row * col) % 3)) % 2 === 0;
+        default: return (((row + col) % 2) + ((row * col) % 3)) % 2 === 0;
+      }
+    }
+  
+    function buildMatrix(version, codewords, mask) {
+      var size = version * 4 + 17;
+      var modules = [], reserved = [];
+      for (var i = 0; i < size; i++) {
+        modules.push(new Array(size).fill(0));
+        reserved.push(new Array(size).fill(false));
+      }
+  
+      function finder(row, col) {
+        for (var r = -1; r <= 7; r++) {
+          for (var c = -1; c <= 7; c++) {
+            var rr = row + r, cc = col + c;
+            if (rr < 0 || rr >= size || cc < 0 || cc >= size) continue;
+            // The -1 and 7 ring is the separator and is always light; inside it
+            // sits the 7x7 finder: its border ring and its 3x3 core.
+            var separator = r === -1 || r === 7 || c === -1 || c === 7;
+            var border = r === 0 || r === 6 || c === 0 || c === 6;
+            var core = r >= 2 && r <= 4 && c >= 2 && c <= 4;
+            modules[rr][cc] = (!separator && (border || core)) ? 1 : 0;
+            reserved[rr][cc] = true;
+          }
+        }
+      }
+      finder(0, 0);
+      finder(0, size - 7);
+      finder(size - 7, 0);
+  
+      // Timing patterns.
+      for (var t = 8; t < size - 8; t++) {
+        var on = t % 2 === 0 ? 1 : 0;
+        modules[6][t] = on; reserved[6][t] = true;
+        modules[t][6] = on; reserved[t][6] = true;
+      }
+  
+      // Alignment patterns, skipping the three that would sit on a finder.
+      var centers = ALIGN[version];
+      for (var a = 0; a < centers.length; a++) {
+        for (var b = 0; b < centers.length; b++) {
+          var ar = centers[a], ac = centers[b];
+          if ((ar <= 8 && ac <= 8) || (ar <= 8 && ac >= size - 9) ||
+              (ar >= size - 9 && ac <= 8)) continue;
+          for (var dr = -2; dr <= 2; dr++) {
+            for (var dc = -2; dc <= 2; dc++) {
+              var ring = Math.max(Math.abs(dr), Math.abs(dc));
+              modules[ar + dr][ac + dc] = (ring === 1) ? 0 : 1;
+              reserved[ar + dr][ac + dc] = true;
+            }
+          }
+        }
+      }
+  
+      // Dark module.
+      modules[size - 8][8] = 1;
+      reserved[size - 8][8] = true;
+  
+      // Reserve the format areas before data placement.
+      for (var f = 0; f <= 8; f++) {
+        if (!reserved[8][f]) reserved[8][f] = true;
+        if (!reserved[f][8]) reserved[f][8] = true;
+      }
+      for (var g = 0; g < 8; g++) {
+        reserved[8][size - 1 - g] = true;
+        reserved[size - 1 - g][8] = true;
+      }
+      if (version >= 7) {
+        for (var v = 0; v < 18; v++) {
+          reserved[Math.floor(v / 3)][size - 11 + (v % 3)] = true;
+          reserved[size - 11 + (v % 3)][Math.floor(v / 3)] = true;
+        }
+      }
+  
+      // Data, snaking up and down two columns at a time, skipping column 6.
+      var bitIndex = 0, upward = true;
+      for (var col = size - 1; col > 0; col -= 2) {
+        if (col === 6) col--;
+        for (var step = 0; step < size; step++) {
+          var row = upward ? size - 1 - step : step;
+          for (var side = 0; side < 2; side++) {
+            var c2 = col - side;
+            if (reserved[row][c2]) continue;
+            var bit = 0;
+            if (bitIndex < codewords.length * 8) {
+              bit = (codewords[bitIndex >> 3] >> (7 - (bitIndex & 7))) & 1;
+            }
+            bitIndex++;
+            modules[row][c2] = maskAt(mask, row, c2) ? bit ^ 1 : bit;
+          }
+        }
+        upward = !upward;
+      }
+  
+      // Format information, both copies.
+      var format = formatBits(mask);
+      for (var i2 = 0; i2 < 15; i2++) {
+        var bitValue = (format >> i2) & 1;
+        if (i2 < 6) modules[i2][8] = bitValue;
+        else if (i2 === 6) modules[7][8] = bitValue;
+        else if (i2 === 7) modules[8][8] = bitValue;
+        else if (i2 === 8) modules[8][7] = bitValue;
+        else modules[8][14 - i2] = bitValue;
+  
+        if (i2 < 8) modules[8][size - 1 - i2] = bitValue;
+        else modules[size - 15 + i2][8] = bitValue;
+      }
+  
+      if (version >= 7) {
+        var vbits = versionBits(version);
+        for (var i3 = 0; i3 < 18; i3++) {
+          var vb = (vbits >> i3) & 1;
+          modules[Math.floor(i3 / 3)][size - 11 + (i3 % 3)] = vb;
+          modules[size - 11 + (i3 % 3)][Math.floor(i3 / 3)] = vb;
+        }
+      }
+  
+      return modules;
+    }
+  
+    function penalty(modules) {
+      var size = modules.length, score = 0, i, j, run, dark = 0;
+  
+      for (i = 0; i < size; i++) {
+        run = 1;
+        for (j = 1; j < size; j++) {
+          if (modules[i][j] === modules[i][j - 1]) {
+            run++;
+          } else {
+            if (run >= 5) score += 3 + (run - 5);
+            run = 1;
+          }
+        }
+        if (run >= 5) score += 3 + (run - 5);
+  
+        run = 1;
+        for (j = 1; j < size; j++) {
+          if (modules[j][i] === modules[j - 1][i]) {
+            run++;
+          } else {
+            if (run >= 5) score += 3 + (run - 5);
+            run = 1;
+          }
+        }
+        if (run >= 5) score += 3 + (run - 5);
+      }
+  
+      for (i = 0; i < size - 1; i++) {
+        for (j = 0; j < size - 1; j++) {
+          var v = modules[i][j];
+          if (v === modules[i][j + 1] && v === modules[i + 1][j] && v === modules[i + 1][j + 1]) {
+            score += 3;
+          }
+        }
+      }
+  
+      var patternA = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0];
+      var patternB = [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1];
+      function matches(line, start, pattern) {
+        for (var k = 0; k < pattern.length; k++) {
+          if (line[start + k] !== pattern[k]) return false;
+        }
+        return true;
+      }
+      for (i = 0; i < size; i++) {
+        var rowLine = modules[i], colLine = [];
+        for (j = 0; j < size; j++) colLine.push(modules[j][i]);
+        for (j = 0; j + 11 <= size; j++) {
+          if (matches(rowLine, j, patternA) || matches(rowLine, j, patternB)) score += 40;
+          if (matches(colLine, j, patternA) || matches(colLine, j, patternB)) score += 40;
+        }
+      }
+  
+      for (i = 0; i < size; i++) {
+        for (j = 0; j < size; j++) dark += modules[i][j];
+      }
+      var percent = (dark * 100) / (size * size);
+      score += Math.floor(Math.abs(percent - 50) / 5) * 10;
+      return score;
+    }
+  
+    /** Returns a size x size array of 0/1, best mask chosen by the standard penalty. */
+    function encode(text) {
+      var bytes = utf8Bytes(text);
+      var version = pickVersion(bytes.length);
+      var codewords = buildCodewords(bytes, version);
+      var best = null, bestScore = Infinity;
+      for (var mask = 0; mask < 8; mask++) {
+        var candidate = buildMatrix(version, codewords, mask);
+        var score = penalty(candidate);
+        if (score < bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+      }
+      return best;
+    }
+  
+    root.BrightQr = { encode: encode, pickVersion: pickVersion };
+  })(typeof module !== 'undefined' && module.exports ? module.exports : window);
+
+  (function () {
+    'use strict';
+    var fields = ['url', 'token', 'cfid', 'cfsec'].map(function (id) {
+      return document.getElementById(id);
+    });
+    var canvas = document.getElementById('qr');
+    var meta = document.getElementById('meta');
+    var payloadOut = document.getElementById('payload');
+
+    function normalizeUrl(raw) {
+      var value = raw.trim().replace(/\/+$/, '');
+      if (!value) return null;
+      if (/^http:\/\//i.test(value)) return { error: 'The address must be https. The phone blocks plain http, so a LAN address cannot work.' };
+      if (!/^https:\/\//i.test(value)) value = 'https://' + value;
+      var host = value.replace(/^https:\/\//i, '').split('/')[0];
+      if (!host || host.indexOf('.') === -1) return { error: 'That does not look like a hostname.' };
+      return { value: value };
+    }
+
+    function draw(matrix) {
+      var quiet = 4;
+      var size = matrix.length + quiet * 2;
+      var scale = Math.max(2, Math.floor(320 / size));
+      canvas.width = size * scale;
+      canvas.height = size * scale;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000000';
+      for (var r = 0; r < matrix.length; r++) {
+        for (var c = 0; c < matrix.length; c++) {
+          if (matrix[r][c]) {
+            ctx.fillRect((c + quiet) * scale, (r + quiet) * scale, scale, scale);
+          }
+        }
+      }
+    }
+
+    function blank(message) {
+      var ctx = canvas.getContext('2d');
+      canvas.width = 320; canvas.height = 320;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      meta.innerHTML = '<div class="warn">' + message + '</div>';
+      payloadOut.textContent = '';
+    }
+
+    function update() {
+      var url = fields[0].value, token = fields[1].value.trim();
+      var cfid = fields[2].value.trim(), cfsec = fields[3].value.trim();
+
+      var normalized = normalizeUrl(url);
+      if (!normalized) return blank('Enter your Home Assistant address.');
+      if (normalized.error) return blank(normalized.error);
+      if (!token) return blank('Enter a long-lived access token.');
+      if ((cfid === '') !== (cfsec === '')) {
+        return blank('Cloudflare Access needs both the client ID and the client secret, or neither.');
+      }
+
+      var payload = { url: normalized.value, ha: token };
+      if (cfid) { payload.cfid = cfid; payload.cfsec = cfsec; }
+      var text = JSON.stringify(payload);
+
+      try {
+        var matrix = BrightQr.encode(text);
+        draw(matrix);
+        payloadOut.textContent = text;
+        meta.innerHTML =
+          '<div>' + text.length + ' characters · version ' +
+          BrightQr.pickVersion(text.length) + ' · error correction L</div>' +
+          '<div style="margin-top:10px">Open BrightHome → Set up → Scan setup code, and point the camera here. ' +
+          'Raise the screen brightness if it will not lock on.</div>' +
+          (cfid ? '' : '<div class="warn">No Access service token. Anyone who finds this hostname reaches your Home Assistant login page.</div>');
+      } catch (error) {
+        blank(error.message);
+      }
+    }
+
+    fields.forEach(function (field) { field.addEventListener('input', update); });
+    update();
+  })();
+</script>
+</body>
+</html>

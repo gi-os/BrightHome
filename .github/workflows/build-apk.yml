@@ -1,0 +1,121 @@
+name: Build & Release BrightHome APK
+
+# Auto-builds the BrightHome tool and attaches a signed APK to a GitHub Release on
+# every push to main (and on manual dispatch).
+on:
+  push:
+    branches: [main]
+    # One of paths / paths-ignore, never both — GitHub rejects the file outright and
+    # the run shows up as a failure with no jobs in it. Documentation is excluded with
+    # a negated pattern inside paths instead.
+    paths:
+      - 'examples/BrightHome/**'
+      - '!**.md'
+      - 'sdk/**'
+      - 'gradle/**'
+      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create releases + upload the APK asset
+  packages: read    # pull the Light keyboard from GitHub Packages
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build APK & publish release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Unit tests
+        env:
+          GH_PACKAGES_USER: ${{ secrets.GH_PACKAGES_USER }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GITHUB_ACTOR: ${{ secrets.GH_PACKAGES_USER }}
+          GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ./gradlew :examples:BrightHome:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Build debug APK
+        env:
+          # The SDK libraries build from source in this repo, but sdk:ui pulls the
+          # Light keyboard from lightphone's GitHub Packages, so a token with
+          # read:packages is still required.
+          #   GH_PACKAGES_USER  = gi-os
+          #   GH_PACKAGES_TOKEN = a PAT with read:packages
+          GH_PACKAGES_USER: ${{ secrets.GH_PACKAGES_USER }}
+          GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+          GITHUB_ACTOR: ${{ secrets.GH_PACKAGES_USER }}
+          GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+        run: ./gradlew :examples:BrightHome:assembleDebug --stacktrace --no-daemon
+
+      - name: Collect APK + version
+        id: apk
+        run: |
+          apk=$(find examples/BrightHome/build/outputs/apk -name '*.apk' | head -n1)
+          ver=$(grep -E '^versionName' examples/BrightHome/lighttool.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          out="BrightHome-v${ver}-build${{ github.run_number }}.apk"
+          cp "$apk" "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Built $out from $apk"
+
+      # A release with no signature makes every install path silently useless, so
+      # prove there is one before publishing rather than after someone tries it.
+      - name: Verify the APK is signed
+        run: |
+          build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n1)
+          "$build_tools/apksigner" verify --print-certs "${{ steps.apk.outputs.file }}"
+
+      - name: Release notes
+        id: notes
+        run: |
+          {
+            echo 'body<<BRIGHTHOME_EOF'
+            awk '/^## Release notes/{flag=1;next}/^## /{flag=0}flag' README.md \
+              | sed '/^$/d' | head -n 40
+            echo ''
+            echo "Commit ${{ github.sha }}."
+            echo 'Install or update through BrightMarket, or sideload the `.apk` below with `adb install`.'
+            echo 'BRIGHTHOME_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.apk.outputs.version }}-build.${{ github.run_number }}
+          name: BrightHome v${{ steps.apk.outputs.version }} (build ${{ github.run_number }})
+          body: ${{ steps.notes.outputs.body }}
+          files: ${{ steps.apk.outputs.file }}
+          make_latest: true
+
+      # Tell the index a release exists instead of waiting for its cron. GitHub
+      # schedules are best-effort — observed 70 minutes apart against a 15 minute
+      # schedule — so without this a new release can sit uncatalogued for over an
+      # hour and simply not appear as an update.
+      - name: Ping the index
+        if: success()
+        continue-on-error: true
+        run: |
+          curl -sf -X POST \
+            -H "Authorization: Bearer ${{ secrets.INDEX_DISPATCH_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/gi-os/brightmarket-index/dispatches \
+            -d "{\"event_type\":\"app-released\"}" \
+          || echo "index ping failed; the hourly cron will pick this up"
