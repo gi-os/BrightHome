@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import com.thelightphone.sdk.SealedLightActivity
 import com.thelightphone.sdk.SimpleLightScreen
 import com.thelightphone.sdk.ui.LightBarButton
+import com.thelightphone.sdk.ui.LightFullscreenModal
 import com.thelightphone.sdk.ui.LightIcons
 import com.thelightphone.sdk.ui.LightLazyScrollView
 import com.thelightphone.sdk.ui.LightTheme
@@ -25,8 +26,13 @@ import com.thelightphone.sdk.ui.LightTopBarCenter
  * Everything in one room.
  *
  * The screen holds the ViewModel, never a snapshot of the rows — a detail screen that
- * caches its own copy goes stale the moment the list behind it rebuilds. Rows are
- * re-derived from the ViewModel each time its state changes.
+ * caches its own copy goes stale the moment the list behind it rebuilds — and it
+ * collects a flow of its own rows rather than deriving them from the home screen's
+ * summarised state, which conflates away every change that does not move an on-count.
+ *
+ * It also forwards the app lifecycle. SimpleLightScreen's onAppPause is a no-op, so
+ * without this the socket would stay open in a pocket whenever the app was backgrounded
+ * from inside a room.
  */
 class AreaScreen(
     sealedActivity: SealedLightActivity,
@@ -34,12 +40,17 @@ class AreaScreen(
     private val areaId: String,
 ) : SimpleLightScreen<Unit>(sealedActivity) {
 
+    override fun onAppPause() = homeViewModel.pause()
+
+    override fun willShow() = homeViewModel.resume()
+
     @Composable
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()
+        val rowsFlow = remember(areaId) { homeViewModel.areaRows(areaId) }
+        val rows by rowsFlow.collectAsState()
         val state by homeViewModel.uiState.collectAsState()
-        val rows = remember(state) { homeViewModel.rowsForArea(areaId) }
-        val title = remember(state) { homeViewModel.areaName(areaId) }
+        val title = remember(areaId, state.areasSupported) { homeViewModel.areaName(areaId) }
         val (rowHeight, rowUnits) = measuredRowHeight()
 
         LightTheme(colors = themeColors) {
@@ -77,6 +88,15 @@ class AreaScreen(
                             }
                         }
                     }
+                }
+
+                // A tap that fails here has to say so here. Letting the message wait for
+                // the home screen ambushes the user with a modal about a room they left.
+                state.toast?.let { message ->
+                    LightFullscreenModal(
+                        message = message,
+                        onClose = { homeViewModel.dismissToast() },
+                    )
                 }
             }
         }

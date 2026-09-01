@@ -45,6 +45,10 @@ class SettingsScreen(
     private val homeViewModel: BrightHomeViewModel,
 ) : SimpleLightScreen<SettingsAction>(sealedActivity) {
 
+    override fun onAppPause() = homeViewModel.pause()
+
+    override fun willShow() = homeViewModel.resume()
+
     @Composable
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()

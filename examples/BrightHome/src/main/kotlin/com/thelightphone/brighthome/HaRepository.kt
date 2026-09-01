@@ -18,6 +18,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 
+/** How long a guess stands before BrightHome goes and asks what actually happened. */
+private const val CONFIRM_TIMEOUT_MILLIS = 6_000L
+
 object BrightHomePreferences {
     val CONFIG = stringPreferencesKey("ha_config")
     val FAVORITES = stringPreferencesKey("favorites")
@@ -77,12 +80,33 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
     private var client: HaClient? = null
     private var connectionJob: Job? = null
 
-    /** Reads what was stored last time. Safe to call more than once. */
+    /**
+     * Stamped onto each connection attempt. Cancellation is not instant, so without
+     * this a job that is still unwinding can write its last gasp over the state a
+     * freshly started job has already published — which is how "Failed" gets stuck on
+     * screen while a perfectly good socket is running underneath it.
+     */
+    private var generation = 0
+
+    /** One pending optimistic-clear timer per entity, so a second tap cancels the first. */
+    private val clearJobs = mutableMapOf<String, Job>()
+
+    private var loaded = false
+
+    /**
+     * Reads what was stored last time, once.
+     *
+     * Re-reading on every resume raced the writes it was about to overwrite: star an
+     * entity and press back and the screen-show reload could hand back the pre-toggle
+     * list. Memory is authoritative once it has been populated.
+     */
     suspend fun load() {
+        if (loaded) return
         val prefs = dataStore.data.first()
         _favorites.value = decodeFavorites(prefs[BrightHomePreferences.FAVORITES])
         val stored = prefs[BrightHomePreferences.CONFIG]?.let { ConfigCodec.decode(it) }
         _config.value = stored
+        loaded = true
         if (stored == null) _status.value = ConnectionStatus.Unpaired
     }
 
@@ -105,6 +129,7 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
         _entityArea.value = emptyMap()
         _favorites.value = emptyList()
         _status.value = ConnectionStatus.Unpaired
+        loaded = true
     }
 
     suspend fun setFavorites(ids: List<String>) {
@@ -132,60 +157,101 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
         }
         if (connectionJob?.isActive == true) return
 
+        val myGeneration = ++generation
+        fun current() = myGeneration == generation
+
         _status.value = ConnectionStatus.Connecting
+        client?.close()
         val haClient = HaClient(config)
         client = haClient
 
         connectionJob = scope.launch(Dispatchers.IO) {
-            haClient.states().fold(
-                onSuccess = { snapshot ->
-                    _entities.value = snapshot.associateBy { it.entityId }
-                    _status.value = ConnectionStatus.Stale(null)
-                },
-                onFailure = { error ->
-                    _status.value = ConnectionStatus.Failed(
-                        error.message ?: "Could not reach ${config.displayHost}.",
-                    )
-                    return@launch
-                },
-            )
+            try {
+                haClient.states().fold(
+                    onSuccess = { snapshot ->
+                        if (!current()) return@launch
+                        _entities.value = snapshot.associateBy { it.entityId }
+                        _status.value = ConnectionStatus.Stale(null)
+                    },
+                    onFailure = { error ->
+                        if (!current()) return@launch
+                        _status.value = ConnectionStatus.Failed(
+                            error.message ?: "Could not reach ${config.displayHost}.",
+                        )
+                        return@launch
+                    },
+                )
 
-            var backoffMillis = 1_000L
-            while (isActive) {
-                val events = Channel<HaEvent>(Channel.BUFFERED)
-                val pump = launch {
-                    for (event in events) handle(event)
+                var backoffMillis = 1_000L
+                while (isActive && current()) {
+                    val events = Channel<HaEvent>(Channel.BUFFERED)
+                    var reachedLive = false
+                    val pump = launch {
+                        for (event in events) {
+                            if (event is HaEvent.Connected) reachedLive = true
+                            // handle() must never throw: this pump is a child of the
+                            // connection job, so an exception here would take the whole
+                            // connection down without saying why.
+                            runCatching { if (current()) handle(event) }
+                        }
+                    }
+                    HaSocket(haClient, config).run(events)
+                    events.close()
+                    pump.join()
+
+                    if (!isActive || !current()) break
+                    if (_status.value is ConnectionStatus.Failed) break
+
+                    // The backoff belongs to the socket, so only the socket may reset
+                    // it. Resetting on a successful REST poll instead meant that an
+                    // instance whose REST works and whose upgrade does not — Access
+                    // refusing the upgrade, a proxy without the Upgrade header — sat in
+                    // a 1Hz loop re-downloading the entire state snapshot forever.
+                    backoffMillis =
+                        if (reachedLive) 1_000L
+                        else (backoffMillis * 2).coerceAtMost(30_000L)
+
+                    delay(backoffMillis)
+                    if (!current()) break
+
+                    haClient.states().onSuccess { snapshot ->
+                        if (current()) _entities.value = snapshot.associateBy { it.entityId }
+                    }
                 }
-                HaSocket(haClient, config).run(events)
-                events.close()
-                pump.join()
-
-                if (!isActive) break
-                val status = _status.value
-                if (status is ConnectionStatus.Failed) break
-
-                // The socket dropping is normal — a tunnel hiccup, the phone sleeping a
-                // moment. Reconnect, but back off so a genuinely dead instance is not
-                // hammered from a pocket.
-                delay(backoffMillis)
-                backoffMillis = (backoffMillis * 2).coerceAtMost(30_000L)
-
-                haClient.states().onSuccess { snapshot ->
-                    _entities.value = snapshot.associateBy { it.entityId }
-                    backoffMillis = 1_000L
-                }
+            } finally {
+                // Every exit path closes the client, including the two early returns
+                // above. Leaving it open leaked an OkHttp dispatcher and pool per
+                // failed foreground.
+                haClient.close()
+                if (current()) client = null
             }
         }
     }
 
+    /**
+     * Bumping the generation first is what makes this safe to call immediately before
+     * start(): the outgoing job may take a while to notice it has been cancelled, and
+     * from this moment nothing it writes is allowed to land.
+     */
     fun stop() {
+        generation++
         connectionJob?.cancel()
         connectionJob = null
+        clearJobs.values.forEach { it.cancel() }
+        clearJobs.clear()
+        _optimistic.value = emptyMap()
         client?.close()
         client = null
         if (_status.value !is ConnectionStatus.Unpaired) {
             _status.value = ConnectionStatus.Stale(null)
         }
+    }
+
+    /** stop(), but waits for the old connection to actually finish unwinding. */
+    suspend fun stopAndJoin() {
+        val job = connectionJob
+        stop()
+        job?.join()
     }
 
     private fun handle(event: HaEvent) {
@@ -231,32 +297,52 @@ class HaRepository(private val dataStore: DataStore<Preferences>) {
         val call = Domains.toggleService(state) ?: return
         val haClient = client
 
-        Domains.optimisticState(state)?.let { predicted ->
+        val predicted = Domains.optimisticState(state)
+        if (predicted != null) {
             _optimistic.update { current -> current + (entityId to predicted) }
         }
 
         if (haClient == null) {
-            _optimistic.update { current -> current - entityId }
+            retract(entityId, predicted)
             _message.value = "Not connected."
             return
         }
 
-        scope.launch(Dispatchers.IO) {
+        // A second tap supersedes the first, so the first tap's timer must not be
+        // allowed to fire and retract the second tap's guess six seconds early.
+        clearJobs.remove(entityId)?.cancel()
+        clearJobs[entityId] = scope.launch(Dispatchers.IO) {
             haClient.callService(call).fold(
                 onSuccess = {
                     if (Domains.controlKind(state.domain) == ControlKind.Momentary) {
                         _message.value = "${state.friendlyName} — done"
                     }
                     // A dead socket never sends the confirming state_changed, so the
-                    // guess would otherwise stay on screen forever.
-                    delay(6_000)
-                    _optimistic.update { current -> current - entityId }
+                    // guess would otherwise stay on screen forever. Rather than snap
+                    // back to a truth that is now stale, ask for the real one.
+                    delay(CONFIRM_TIMEOUT_MILLIS)
+                    haClient.states().onSuccess { snapshot ->
+                        _entities.value = snapshot.associateBy { it.entityId }
+                    }
+                    retract(entityId, predicted)
                 },
                 onFailure = { error ->
-                    _optimistic.update { current -> current - entityId }
+                    retract(entityId, predicted)
                     _message.value = error.message ?: "That did not go through."
                 },
             )
+            clearJobs.remove(entityId)
+        }
+    }
+
+    /**
+     * Removes a guess only if it is still the guess this call made. Without the
+     * comparison, a slow first tap retracts a fast second tap's prediction.
+     */
+    private fun retract(entityId: String, predicted: String?) {
+        if (predicted == null) return
+        _optimistic.update { current ->
+            if (current[entityId] == predicted) current - entityId else current
         }
     }
 

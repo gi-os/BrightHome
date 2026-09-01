@@ -16,6 +16,7 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Both halves of the connection — REST for the snapshot and the service calls, the
@@ -55,7 +56,7 @@ class HaClient(private val config: HaConfig) {
     }
 
     /** GET /api/ — cheap reachability probe that also proves both credentials work. */
-    suspend fun ping(): Result<Unit> = runCatching {
+    suspend fun ping(): Result<Unit> = attempt {
         val response = http.get("${config.baseUrl}/api/")
         if (!response.status.isSuccess()) {
             throw HaException(describe(response.status.value, response.bodyAsText()))
@@ -63,7 +64,7 @@ class HaClient(private val config: HaConfig) {
     }
 
     /** GET /api/states — the full snapshot the UI opens on. */
-    suspend fun states(): Result<List<HaState>> = runCatching {
+    suspend fun states(): Result<List<HaState>> = attempt {
         val response = http.get("${config.baseUrl}/api/states")
         if (!response.status.isSuccess()) {
             throw HaException(describe(response.status.value, response.bodyAsText()))
@@ -72,7 +73,7 @@ class HaClient(private val config: HaConfig) {
     }
 
     /** POST /api/services/<domain>/<service> with {"entity_id": ...}. */
-    suspend fun callService(call: ServiceCall): Result<Unit> = runCatching {
+    suspend fun callService(call: ServiceCall): Result<Unit> = attempt {
         val response = http.post(
             "${config.baseUrl}/api/services/${call.domain}/${call.service}",
         ) {
@@ -82,6 +83,21 @@ class HaClient(private val config: HaConfig) {
         if (!response.status.isSuccess()) {
             throw HaException(describe(response.status.value, response.bodyAsText()))
         }
+    }
+
+    /**
+     * runCatching would be the obvious thing here and it is the wrong thing: it catches
+     * Throwable, so cancelling a request in flight — which happens every time the app is
+     * backgrounded mid-fetch — comes back as an ordinary failure. That failure then gets
+     * rendered as "Job was cancelled" in the status line and, worse, can park the
+     * reconnect loop on a terminal Failed state. Cancellation is not a result.
+     */
+    private inline fun <T> attempt(block: () -> T): Result<T> = try {
+        Result.success(block())
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Throwable) {
+        Result.failure(error)
     }
 
     fun close() {

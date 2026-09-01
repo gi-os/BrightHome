@@ -45,6 +45,10 @@ private enum class ManualStep { Address, Token, AccessAsk, AccessId, AccessSecre
 /**
  * Pairing, by QR first.
  *
+ * This is the one screen that does not forward the app lifecycle to BrightHomeViewModel,
+ * because it deliberately holds no reference to it: on first run there is nothing
+ * connected yet, and when re-pairing the old connection should be down.
+ *
  * A long-lived access token is around 180 characters and a Cloudflare service token adds
  * two more secrets. Typing that on this keyboard is not a reasonable thing to ask, so the
  * whole credential set travels as one scanned payload from docs/pair.html. Manual entry

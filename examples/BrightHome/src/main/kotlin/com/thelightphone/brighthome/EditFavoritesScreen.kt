@@ -39,16 +39,22 @@ class EditFavoritesScreen(
     private val homeViewModel: BrightHomeViewModel,
 ) : SimpleLightScreen<Unit>(sealedActivity) {
 
+    // SimpleLightScreen does not forward the app lifecycle to a ViewModel it does not
+    // own, so the shared one would otherwise keep its socket open in a pocket.
+    override fun onAppPause() = homeViewModel.pause()
+
+    override fun willShow() = homeViewModel.resume()
+
     @Composable
     override fun Content() {
         val themeColors by LightThemeController.colors.collectAsState()
-        val state by homeViewModel.uiState.collectAsState()
         val favorites by homeViewModel.repository.favorites.collectAsState()
+        val groups by homeViewModel.pickerGroups.collectAsState()
         val (rowHeight, rowUnits) = measuredRowHeight()
 
-        val items = remember(state) {
+        val items = remember(groups) {
             buildList {
-                for ((areaName, rows) in homeViewModel.pickerGroups()) {
+                for ((areaName, rows) in groups) {
                     add(PickerItem.Header(areaName))
                     rows.forEach { add(PickerItem.Entity(it)) }
                 }

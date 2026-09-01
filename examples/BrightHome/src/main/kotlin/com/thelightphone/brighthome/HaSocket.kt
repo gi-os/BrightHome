@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -107,8 +108,9 @@ class HaSocket(private val client: HaClient, private val config: HaConfig) {
                         }
 
                         "result" -> {
-                            val id = message["id"]?.jsonPrimitive?.int ?: continue
-                            val ok = message["success"]?.jsonPrimitive?.content == "true"
+                            val id = runCatching { message["id"]?.jsonPrimitive?.int }
+                                .getOrNull() ?: continue
+                            val ok = message["success"]?.jsonPrimitive?.booleanOrNull == true
                             if (!ok) {
                                 // Only the registry calls need admin rights. Losing them
                                 // costs the Rooms tab, not the connection.
@@ -123,19 +125,31 @@ class HaSocket(private val client: HaClient, private val config: HaConfig) {
                                 continue
                             }
                             val result = message["result"] ?: continue
-                            when (id) {
-                                areaId -> registryAreas = client.json
-                                    .decodeFromJsonElement<List<HaArea>>(result)
+                            // A registry payload this build cannot decode costs the
+                            // Rooms tab. Left to throw it costs the connection, and
+                            // the reconnect loop then replays the same frame forever.
+                            val decoded = runCatching {
+                                when (id) {
+                                    areaId -> registryAreas = client.json
+                                        .decodeFromJsonElement<List<HaArea>>(result)
 
-                                entityRegistryId -> registryEntities = client.json
-                                    .decodeFromJsonElement<List<HaEntityRegistryEntry>>(result)
+                                    entityRegistryId -> registryEntities = client.json
+                                        .decodeFromJsonElement<List<HaEntityRegistryEntry>>(result)
 
-                                deviceRegistryId -> registryDevices = client.json
-                                    .decodeFromJsonElement<List<HaDeviceRegistryEntry>>(result)
+                                    deviceRegistryId -> registryDevices = client.json
+                                        .decodeFromJsonElement<List<HaDeviceRegistryEntry>>(result)
 
-                                else -> continue
+                                    else -> return@runCatching false
+                                }
+                                true
+                            }.getOrElse {
+                                if (!registryFailed) {
+                                    registryFailed = true
+                                    events.send(HaEvent.AreasUnavailable)
+                                }
+                                false
                             }
-                            emitAreasWhenComplete()
+                            if (decoded) emitAreasWhenComplete()
                         }
                     }
                 }

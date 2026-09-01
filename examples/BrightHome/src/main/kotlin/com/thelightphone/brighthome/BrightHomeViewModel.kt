@@ -129,7 +129,7 @@ class BrightHomeViewModel(
 
         val byArea = controllable.groupBy { world.entityArea[it.entityId] }
 
-        val areaRows = world.areas.mapNotNull { area ->
+        val roomRows = world.areas.mapNotNull { area ->
             val members = byArea[area.areaId].orEmpty()
             if (members.isEmpty()) return@mapNotNull null
             AreaRow(
@@ -157,7 +157,7 @@ class BrightHomeViewModel(
             statusLine = statusLine(conn.status),
             host = conn.config?.displayHost.orEmpty(),
             favorites = favoriteRows,
-            areas = areaRows,
+            areas = roomRows,
             areasSupported = world.areasSupported,
             unassigned = unassigned,
             scenes = scenes,
@@ -197,11 +197,20 @@ class BrightHomeViewModel(
         unavailable = true,
     )
 
-    /** Rows for one area, or the loose entities when [areaId] is the unassigned bucket. */
-    fun rowsForArea(areaId: String): List<EntityRow> {
-        val entities = repository.entities.value.withOptimistic(repository.optimistic.value)
-        val index = repository.entityArea.value
-        return entities.values
+    /**
+     * Rows for one area, or the loose entities when [areaId] is the unassigned bucket.
+     *
+     * This is a flow rather than a value read off uiState. BrightHomeUiState summarises a
+     * room as a name and an on-count, so a brightness change or a new media title leaves
+     * it equal, the StateFlow conflates the emission away, and a screen deriving its rows
+     * from it would sit there showing "On · 20%" while the lamp was at 80.
+     */
+    fun areaRows(areaId: String): StateFlow<List<EntityRow>> = combine(
+        repository.entities,
+        repository.optimistic,
+        repository.entityArea,
+    ) { entities, optimistic, index ->
+        entities.withOptimistic(optimistic).values
             .filter { Domains.isInteresting(it.domain) && it.domain !in SCENE_DOMAINS }
             .filter {
                 val area = index[it.entityId]
@@ -209,29 +218,34 @@ class BrightHomeViewModel(
             }
             .sortedBy { it.friendlyName.lowercase() }
             .map { it.toRow() }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun areaName(areaId: String): String = when {
+        areaId != UNASSIGNED_AREA ->
+            repository.areas.value.firstOrNull { it.areaId == areaId }?.name ?: "Room"
+
+        // Same wording the Rooms list used for the bucket, so the title does not
+        // rename itself on the way in.
+        repository.areasSupported.value -> "No room"
+        else -> "All devices"
     }
 
-    fun areaName(areaId: String): String =
-        if (areaId == UNASSIGNED_AREA) uiState.value.unassigned?.name ?: "Devices"
-        else repository.areas.value.firstOrNull { it.areaId == areaId }?.name ?: "Room"
-
     /** Everything worth pinning, grouped by room, for the favourites picker. */
-    fun pickerGroups(): List<Pair<String, List<EntityRow>>> {
-        val entities = repository.entities.value
-        val index = repository.entityArea.value
-        val areaNames = repository.areas.value.associate { it.areaId to it.name }
-
-        return entities.values
+    val pickerGroups: StateFlow<List<Pair<String, List<EntityRow>>>> = combine(
+        repository.entities,
+        repository.entityArea,
+        repository.areas,
+    ) { entities, index, areas ->
+        val areaNames = areas.associate { it.areaId to it.name }
+        entities.values
             .filter { Domains.isInteresting(it.domain) }
             .groupBy { index[it.entityId]?.let { id -> areaNames[id] } ?: "No room" }
             .toList()
-            .sortedWith(
-                compareBy({ it.first == "No room" }, { it.first.lowercase() }),
-            )
+            .sortedWith(compareBy({ it.first == "No room" }, { it.first.lowercase() }))
             .map { (name, members) ->
                 name to members.sortedBy { it.friendlyName.lowercase() }.map { it.toRow() }
             }
-    }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun selectTab(next: HomeTab) {
         if (tab.value == next) {
@@ -255,7 +269,7 @@ class BrightHomeViewModel(
 
     fun pair(config: HaConfig) {
         viewModelScope.launch {
-            repository.stop()
+            repository.stopAndJoin()
             repository.save(config)
             repository.start(viewModelScope)
         }
@@ -267,24 +281,36 @@ class BrightHomeViewModel(
 
     fun dismissToast() = repository.clearMessage()
 
-    override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
-        super.onScreenShow(screen)
+    /**
+     * Opening a sub-screen calls onScreenHide, because LightOS hides the screen
+     * underneath whatever it pushes. Tearing the connection down there is what made
+     * every room, the settings refresh and every tap outside Favorites silently do
+     * nothing — the client was already closed by the time the user arrived. The
+     * connection follows the *app* lifecycle, so only resume and pause move it.
+     */
+    fun resume() {
         viewModelScope.launch {
             repository.load()
             repository.start(viewModelScope)
         }
     }
 
-    override fun onScreenHide(screen: SimpleLightScreen<Unit>) {
-        super.onScreenHide(screen)
+    /**
+     * Nothing here runs in the background. A socket held open in a pocket costs battery
+     * and buys nothing, because the screen is the only consumer.
+     */
+    fun pause() {
         repository.stop()
+    }
+
+    override fun onScreenShow(screen: SimpleLightScreen<Unit>) {
+        super.onScreenShow(screen)
+        resume()
     }
 
     override fun onAppPause() {
         super.onAppPause()
-        // Nothing here runs in the background. A socket held open in a pocket costs
-        // battery and buys nothing, because the screen is the only consumer.
-        repository.stop()
+        pause()
     }
 
     override fun onCleared() {
