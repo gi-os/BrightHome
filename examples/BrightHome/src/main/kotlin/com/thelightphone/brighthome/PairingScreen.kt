@@ -18,7 +18,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.thelightphone.lp3Keyboard.ui.KeyboardOptions
 import com.thelightphone.sdk.LightQrCodeScanner
 import com.thelightphone.sdk.SealedLightActivity
 import com.thelightphone.sdk.SimpleLightScreen
@@ -37,7 +36,6 @@ import com.thelightphone.sdk.ui.LightTopBar
 import com.thelightphone.sdk.ui.LightTopBarCenter
 import com.thelightphone.sdk.ui.gridUnitsAsDp
 import com.thelightphone.sdk.ui.lightClickable
-import kotlinx.coroutines.flow.StateFlow
 
 /** Where the manual fallback has got to. The QR path skips all of it. */
 private enum class ManualStep { Address, Token, AccessAsk, AccessId, AccessSecret }
@@ -68,7 +66,6 @@ class PairingScreen(sealedActivity: SealedLightActivity) :
         var accessId by remember { mutableStateOf("") }
 
         val fieldState = rememberTextFieldState("")
-        val keyboardOptions = rememberKeyboardOptions()
 
         LightTheme(colors = themeColors) {
             Box(
@@ -90,7 +87,6 @@ class PairingScreen(sealedActivity: SealedLightActivity) :
                     ManualEntry(
                         step = step,
                         state = fieldState,
-                        keyboardOptionsFlow = keyboardOptions,
                         onBack = {
                             manual = null
                             fieldState.clearText()
@@ -217,7 +213,6 @@ class PairingScreen(sealedActivity: SealedLightActivity) :
     private fun ManualEntry(
         step: ManualStep,
         state: TextFieldState,
-        keyboardOptionsFlow: StateFlow<KeyboardOptions>,
         onBack: () -> Unit,
         onAnswer: (String) -> Unit,
         onAccessAnswer: (Boolean) -> Unit,
@@ -259,6 +254,11 @@ class PairingScreen(sealedActivity: SealedLightActivity) :
             ManualStep.AccessSecret -> "CF-Access-Client-Secret"
             ManualStep.AccessAsk -> ""
         }
+
+        // Asked for here rather than at the top of the screen. It is a round trip to
+        // the LightOS server, and only this branch has a text field on it — the QR path,
+        // which is how pairing is meant to go, should never touch the keyboard service.
+        val keyboardOptionsFlow = rememberKeyboardOptions()
 
         LightTextInputEditor(
             title = title,

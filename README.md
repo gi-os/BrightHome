@@ -15,7 +15,7 @@ install or update it directly. Don't have BrightMarket yet? Get it, and browse
 every Bright app, at
 **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)**.
 
-**Current release: v1.0.1.** `versionCode` 2, tool id `com.thelightphone.brighthome`.
+**Current release: v1.0.2.** `versionCode` 3, tool id `com.thelightphone.brighthome`.
 
 Part of the [Bright* collection](https://brightmarket.gzl.dev).
 
@@ -127,6 +127,16 @@ and tells BrightMarket about it.
 
 ## Release notes
 
+- **v1.0.2** — **Set up now opens.** Tapping it killed the tool outright, and the pairing
+  screen was innocent: opening it asks LightOS for the keyboard options, a current phone
+  omits its null fields when it encodes the reply, and to the decoder a nullable field
+  with no default is still a required one. The MissingFieldException came out of a bare
+  `scope.launch` with no handler behind it, which means the process. This repo's vendored
+  copy of the SDK was the one that never got the fix, since BrightTransit — which it was
+  forked from — has no text field anywhere and so never fired it. The reply decoder now
+  tolerates omitted fields, an unreadable reply is an error rather than a throw, and the
+  keyboard is only fetched by the screen that actually types. The camera permission check
+  the QR scanner runs went down the same path and had the same fault.
 - **v1.0.1** — Nine fixes from a review of the first build, none of them reachable from
   a test. Opening a room, the favourites picker or settings no longer tears the
   connection down, so taps outside Favorites work. The reconnect backoff is reset by the

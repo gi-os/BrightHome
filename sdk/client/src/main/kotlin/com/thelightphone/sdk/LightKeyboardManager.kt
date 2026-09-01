@@ -58,10 +58,15 @@ fun rememberKeyboardOptions(
     SideEffect {
         refreshJob.value?.cancel()
         refreshJob.value = scope.launch {
-            refreshKeyboardOptions()?.let {
-                cachedOptions = it
-                flow.value = it
-            }
+            // Belt as well as braces: the decode is guarded now, but this launch has no
+            // exception handler behind it, and everything it protects is a nicety. A
+            // keyboard that falls back to its defaults beats a tool that dies drawing one.
+            runCatching { refreshKeyboardOptions() }
+                .getOrNull()
+                ?.let {
+                    cachedOptions = it
+                    flow.value = it
+                }
         }
     }
     return flow

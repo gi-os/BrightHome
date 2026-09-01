@@ -177,7 +177,22 @@ suspend fun <TRequest, TResponse> callRemoteServiceMethod(
         result = LightServiceConnection.request(method.id, encoded)
     }
     when (result) {
-        is LightResult.Success -> LightResult.Success(method.decodeResponse(result.data))
+        // decodeResponse is the one step outside LightServiceConnection.request's own
+        // try/catch, so a reply this build cannot parse used to throw straight out of
+        // whatever coroutine called it — usually a bare scope.launch with no handler,
+        // which means the process. A payload we cannot read is an error, not a crash.
+        is LightResult.Success -> try {
+            LightResult.Success(method.decodeResponse(result.data))
+        } catch (cancellation: kotlinx.coroutines.CancellationException) {
+            throw cancellation
+        } catch (error: Throwable) {
+            Log.e(TAG, "Could not decode the ${method.id} reply: ${error.message}")
+            LightResult.Error(
+                LightResult.ErrorCode.Unknown,
+                "Could not decode the ${method.id} reply",
+            )
+        }
+
         is LightResult.Error -> result
     }
 }
