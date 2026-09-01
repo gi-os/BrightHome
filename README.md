@@ -15,7 +15,7 @@ install or update it directly. Don't have BrightMarket yet? Get it, and browse
 every Bright app, at
 **[brightmarket.gzl.dev](https://brightmarket.gzl.dev)**.
 
-**Current release: v1.0.0.** `versionCode` 1, tool id `com.thelightphone.brighthome`.
+**Current release: v1.0.1.** `versionCode` 2, tool id `com.thelightphone.brighthome`.
 
 Part of the [Bright* collection](https://brightmarket.gzl.dev).
 
@@ -127,6 +127,15 @@ and tells BrightMarket about it.
 
 ## Release notes
 
+- **v1.0.1** — Nine fixes from a review of the first build, none of them reachable from
+  a test. Opening a room, the favourites picker or settings no longer tears the
+  connection down, so taps outside Favorites work. The reconnect backoff is reset by the
+  socket rather than by a REST poll, which ends a 1Hz snapshot loop on instances whose
+  websocket upgrade is refused. A second tap on the same entity is no longer undone by
+  the first tap's timer, and after a confirmed call BrightHome re-reads the real state
+  instead of snapping back to a stale one. Rooms and the picker redraw on brightness and
+  media changes, not only on/off. A malformed registry frame costs the Rooms tab rather
+  than the connection.
 - **v1.0.0** — Initial release. Favorites, Rooms and Scenes over a Cloudflare tunnel;
   QR pairing with Cloudflare Access service token support; live state over the Home
   Assistant WebSocket with optimistic toggling.
