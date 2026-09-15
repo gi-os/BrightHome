@@ -2,6 +2,8 @@
 
 # BrightHome
 
+[**⬇ Download the latest APK**](https://github.com/gi-os/BrightHome/releases/latest) · free, open source.
+
 Home Assistant on the Light Phone III. LightOS shows the tool as **Home**.
 
 ## Install via BrightMarket
